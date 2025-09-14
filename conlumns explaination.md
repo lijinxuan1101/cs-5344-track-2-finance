@@ -21,7 +21,9 @@ Binary label indicating loan performance outcome (for this project setting):
   - convert into pd.datetime
 
 - **FirstTimeHomebuyerFlag**  
-  `Y` = Yes, `N` = No, `9` = Not Available.
+  `Y` = Yes, `N` = No, `9` = Not Available.  
+  - one-hot encode
+  - Mapping: `FirstTimeHomebuyerFlag` -> `FirstTimeHomebuyerFlag_N`, `FirstTimeHomebuyerFlag_Y`
 
 - **MaturityDate**  
   Scheduled maturity date (YYYYMM).
@@ -37,7 +39,9 @@ Binary label indicating loan performance outcome (for this project setting):
   Number of dwelling units (1–4).
 
 - **OccupancyStatus**  
-  `P` = Primary, `I` = Investment, `S` = Second Home, `9` = Not Available.
+  `P` = Primary, `I` = Investment, `S` = Second Home, `9` = Not Available.  
+  - one-hot encode
+  - Mapping: `OccupancyStatus` -> `OccupancyStatus_I`, `OccupancyStatus_P`, `OccupancyStatus_S`
 
 - **OriginalCLTV**  
   Combined Loan-to-Value ratio at origination.
@@ -55,25 +59,35 @@ Binary label indicating loan performance outcome (for this project setting):
   Note rate at origination.
 
 - **Channel**  
-  Origination channel: `R` = Retail, `B` = Broker, `C` = Correspondent, `T` = TPO Not Specified, `9` = Not Available.
+  Origination channel: `R` = Retail, `B` = Broker, `C` = Correspondent, `T` = TPO Not Specified, `9` = Not Available.  
+  - one-hot encode
+  - Mapping: `Channel` -> `Channel_B`, `Channel_C`, `Channel_R`
 
 - **PPM_Flag**  
-  Prepayment penalty: `Y` = Yes, `N` = No.
+  Prepayment penalty: `Y` = Yes, `N` = No.  
+  - one-hot encode
+  - Mapping: `PPM_Flag` -> `PPM_Flag_N`
 
 - **ProductType**  
-  `FRM` = Fixed Rate, `ARM` = Adjustable Rate.
+  `FRM` = Fixed Rate, `ARM` = Adjustable Rate.  
+  - one-hot encode
+  - Mapping: `ProductType` -> `ProductType_FRM`
 
 - **PropertyState**  
   Two-letter state/territory code.
 
 - **PropertyType**  
-  `SF` = Single-Family, `CO` = Condo, `PU` = PUD, `MH` = Manufactured, `CP` = Co-op, `99` = Not Available.
+  `SF` = Single-Family, `CO` = Condo, `PU` = PUD, `MH` = Manufactured, `CP` = Co-op, `99` = Not Available.  
+  - one-hot encode
+  - Mapping: `PropertyType` -> `PropertyType_CO`, `PropertyType_CP`, `PropertyType_MH`, `PropertyType_PU`, `PropertyType_SF`
 
 - **PostalCode**  
   Masked ZIP code (first 3 digits + “00”).
 
 - **LoanPurpose**  
-  `P` = Purchase, `C` = Refinance Cash Out, `N` = Refinance No Cash Out, `R` = Refinance Not Specified, `9` = Not Available.
+  `P` = Purchase, `C` = Refinance Cash Out, `N` = Refinance No Cash Out, `R` = Refinance Not Specified, `9` = Not Available.  
+  - one-hot encode
+  - Mapping: `LoanPurpose` -> `LoanPurpose_C`, `LoanPurpose_N`, `LoanPurpose_P`
 
 - **OriginalLoanTerm**  
   Scheduled term in months.
@@ -88,20 +102,28 @@ Binary label indicating loan performance outcome (for this project setting):
   Entity servicing the loan (“Other Servicers” if below disclosure threshold).
 
 - **SuperConformingFlag**  
-  Indicates whether loan exceeded conforming limits but qualified as “super conforming”.
+  Indicates whether loan exceeded conforming limits but qualified as "super conforming".  
+  - one-hot encode
+  - Mapping: `SuperConformingFlag` -> `SuperConformingFlag_Y`
 
 - **PreHARP_Flag / ProgramIndicator / ReliefRefinanceIndicator**  
   Indicators for HARP and related refinance programs.
   - dropped PreHARP_Flag (missing rate 100%)
   - dropped ReliefRefinanceIndicator(missing rate 100%)
+  - ProgramIndicator: one-hot encode
+  - Mapping: `ProgramIndicator` -> `ProgramIndicator_9`, `ProgramIndicator_F`, `ProgramIndicator_H`
 - **PropertyValMethod**  
   Appraisal method: `1` = ACE, `2` = Full, `3` = Other (Desktop/AVM), `4` = ACE + PDR.
 
 - **InterestOnlyFlag**  
-  `Y` = interest-only payments required, else `N`.
+  `Y` = interest-only payments required, else `N`.  
+  - one-hot encode
+  - Mapping: `InterestOnlyFlag` -> `InterestOnlyFlag_N`
 
 - **BalloonIndicator**  
-  `Y` = balloon payment, else `N`.
+  `Y` = balloon payment, else `N`.  
+  - one-hot encode
+  - Mapping: `BalloonIndicator` -> `BalloonIndicator_7`, `BalloonIndicator_N`, `BalloonIndicator_Y`
 
 ---
 
