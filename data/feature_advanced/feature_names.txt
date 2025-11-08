@@ -46,6 +46,7 @@ amort_short_50
 amort_short_std
 io_payment_count
 Zero_Payment_Streak
+Early_Delinquency_Flag
 CurrentNonInterestBearingUPB_slope_full
 MaturityPressure_Index
 CurrentActualUPB_w_main_trend

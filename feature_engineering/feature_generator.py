@@ -383,6 +383,95 @@ class MaturityRiskFeatureBuilder(FeatureBuilderBase):
         return df_features.fillna(self.impute_vals)
 
 
+class InterestRateFeatureBuilder(FeatureBuilderBase):
+    """
+    处理利率风险 (Interest Rate Risk) 特征构建器
+    - 利率变化、波动性、ARM标志、利率压力
+    """
+    def __init__(self, temporal_cols_all: List[str]):
+        super().__init__()
+        self.rate_cols = sorted(
+            [c for c in temporal_cols_all if c.endswith("_CurrentInterestRate")],
+            key=lambda x: int(x.split("_",1)[0])
+        )
+        self.feature_names = [
+            "RateChange",
+            "RateVolatility",
+            "ARM_Flag",
+            "InterestRateStress"
+        ]
+        self.impute_vals = {f: 0.0 for f in self.feature_names}
+        
+    def _calculate_features(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        feats = pd.DataFrame(index=df.index)
+        
+        # 1. ARM_Flag: ARM贷款标志（ProductType == "ARM"）
+        if "ProductType" in df.columns:
+            product_type = df["ProductType"].astype(str).str.upper()
+            feats["ARM_Flag"] = (product_type == "ARM").astype(int)
+        else:
+            feats["ARM_Flag"] = 0
+        
+        if not self.rate_cols or "OriginalInterestRate" not in df.columns:
+            # 如果缺少必要数据，设置默认值
+            feats["RateChange"] = 0.0
+            feats["RateVolatility"] = 0.0
+            feats["InterestRateStress"] = 0.0
+            return feats
+        
+        # 获取原始利率
+        orig_rate = df["OriginalInterestRate"].to_numpy(float)
+        
+        # 获取 CurrentInterestRate 时序数据
+        RT_M = df[self.rate_cols].to_numpy(float)
+        
+        # 获取最后一个有效利率值
+        mask_rate = np.isnan(RT_M)
+        idx_rate = np.where(~mask_rate, np.arange(RT_M.shape[1]), 0)
+        np.maximum.accumulate(idx_rate, axis=1, out=idx_rate)
+        RT_filled = RT_M[np.arange(RT_M.shape[0])[:, None], idx_rate]
+        rate_last = RT_filled[:, -1]
+        
+        # 2. RateChange: 利率变化量（CurrentInterestRate_last - OriginalInterestRate）
+        feats["RateChange"] = rate_last - orig_rate
+        
+        # 3. RateVolatility: 利率波动性（变异系数：std / mean）
+        with np.errstate(all='ignore'):
+            rate_mean = np.nanmean(RT_M, axis=1)
+            rate_std = np.nanstd(RT_M, axis=1)
+            rate_volatility = np.where(
+                np.abs(rate_mean) > 1e-9,
+                rate_std / (np.abs(rate_mean) + 1e-9),
+                0.0
+            )
+            feats["RateVolatility"] = rate_volatility
+        
+        # 4. InterestRateStress: 利率压力（RateChange * LTV，结合利率变化和杠杆）
+        # 需要从context中获取静态特征
+        if "static_features" in context and "OriginalLTV" in context["static_features"].columns:
+            ltv = context["static_features"]["OriginalLTV"].values
+            # 利率压力 = 利率变化 × LTV（利率上升对高杠杆贷款影响更大）
+            interest_rate_stress = feats["RateChange"].values * ltv
+            feats["InterestRateStress"] = interest_rate_stress
+        else:
+            # 如果无法获取LTV，只使用利率变化
+            feats["InterestRateStress"] = feats["RateChange"]
+        
+        return feats
+
+    def fit(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> 'InterestRateFeatureBuilder':
+        df_features = self._calculate_features(df, context)
+        for c in df_features.columns:
+            v = df_features[c].dropna()
+            self.impute_vals[c] = float(v.median() if len(v) else 0.0)
+        self._fitted = True
+        return self
+
+    def transform(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        df_features = self._calculate_features(df, context)
+        return df_features.fillna(self.impute_vals)
+
+
 class AmortizationFeatureBuilder(FeatureBuilderBase):
     """
     处理摊销 (Amortization) 信号。
@@ -396,7 +485,9 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
             "amort_short_mean", "amort_short_70", "amort_short_50",
             "amort_short_std", "io_payment_count", "amort_mask_not_applicable",
             # 新增：摊销行为延伸特征
-            "Cumulative_Shortfall", "Zero_Payment_Streak", "Shortfall_Volatility"
+            "Cumulative_Shortfall", "Zero_Payment_Streak", "Shortfall_Volatility",
+            # 新增：早期违约特征
+            "Early_Delinquency_Flag"
         ]
         self.impute_vals = {f: 0.0 for f in self.feature_names}
 
@@ -477,6 +568,31 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
         # 使用变异系数（CV = std/mean）来标准化波动性，使其对不同水平的短缺都可比
         shortfall_mean_abs = np.abs(short_mean) + 1e-9
         shortfall_volatility = np.where(shortfall_mean_abs > 1e-6, short_std / shortfall_mean_abs, 0.0)
+
+        
+        # --- 早期违约特征 ---
+        # Early_Delinquency_Flag: 前6个月未全额还款次数
+        # 统计前6个有效月份中，实际还款少于预期还款的次数
+        early_delinquency_count = np.zeros(n)
+        for i in range(n):
+            if use_mask[i]:
+                s_row = S[i, :]  # 短缺比例序列
+                e_row = E[i, :]  # 预期还款序列
+                
+                # 找到有效的数据点（预期还款 > 0）
+                valid_mask = (e_row > 1e-6) & (~np.isnan(s_row))
+                valid_indices = np.where(valid_mask)[0]
+                
+                if len(valid_indices) > 0:
+                    # 取前6个月（或所有有效月份，如果少于6个月）
+                    num_months_to_check = min(6, len(valid_indices))
+                    recent_indices = valid_indices[-num_months_to_check:]
+                    
+                    # 统计未全额还款的次数（短缺比例 > 0.01，表示实际还款少于预期的1%）
+                    # 使用较小的阈值来捕捉任何未全额还款的情况
+                    delinquency_threshold = 0.01
+                    delinquent_months = np.sum(s_row[recent_indices] > delinquency_threshold)
+                    early_delinquency_count[i] = delinquent_months
         # --- 结束新增 ---
 
         feats = pd.DataFrame({
@@ -489,7 +605,9 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
             # 新增特征
             "Cumulative_Shortfall": np.where(use_mask, cumulative_shortfall, 0.0),
             "Zero_Payment_Streak": np.where(use_mask, zero_payment_streak, 0.0),
-            "Shortfall_Volatility": np.where(use_mask, shortfall_volatility, 0.0)
+            "Shortfall_Volatility": np.where(use_mask, shortfall_volatility, 0.0),
+            # 早期违约特征
+            "Early_Delinquency_Flag": np.where(use_mask, early_delinquency_count, 0.0)
         }, index=df.index)
         
         return feats
@@ -832,21 +950,26 @@ def main():
         "Cumulative_Shortfall",
         "Shortfall_Volatility",
         # "Zero_Payment_Streak", -->有用
+        
+        # 利率
+        "RateChange",
+        "RateVolatility",
+        "ARM_Flag",
+        "InterestRateStress"
 
+        # 
     ]
 
 
     # 按顺序定义构建器
     builders: List[FeatureBuilderBase] = [
         StaticFeatureBuilder(static_cols=static_cols),
-        
-        # --- 新增 ---
         DebtServicingFeatureBuilder(),
-        
         LeverageFeatureBuilder(temporal_cols_all=temporal_cols_all),
+        InterestRateFeatureBuilder(temporal_cols_all=temporal_cols_all),  # 新增：利率风险特征
         AmortizationFeatureBuilder(temporal_cols_all=temporal_cols_all),
         BalanceFeatureBuilder(temporal_cols_all=temporal_cols_all),
-        MaturityRiskFeatureBuilder(temporal_cols_all=temporal_cols_all),  # 新增：到期风险特征
+        MaturityRiskFeatureBuilder(temporal_cols_all=temporal_cols_all), 
         GenericTemporalBuilder(
             temporal_cols_all=temporal_cols_all,
             ignore_col_suffixes=specialized_temporal_suffixes
