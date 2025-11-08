@@ -129,6 +129,13 @@ class StaticFeatureBuilder(FeatureBuilderBase):
         else:
             data['Single_Borrower_Flag'] = 0
         
+        # --- 新增：信用行为特征 ---
+        # High_DTI_and_Low_CreditScore_Flag: 高负债低信用群体标志
+        # 识别高DTI（>43）且低信用分数（<650）的高风险群体
+        dti_high = (data['OriginalDTI'] > 43)
+        credit_low = (data['CreditScore'] < 650)
+        data['High_DTI_and_Low_CreditScore_Flag'] = (dti_high & credit_low).astype(int)
+        
         if self._fitted:
             for c in data.columns:
                  if c not in self.static_cols:
@@ -491,7 +498,9 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
             # 新增：摊销滞后特征
             "Amortization_Lag",
             # 新增：早期支付趋势特征
-            "Early_Payment_Trend"
+            "Early_Payment_Trend",
+            # 新增：资产波动复合特征
+            "UPB_trend_x_amort_short_mean"
         ]
         self.impute_vals = {f: 0.0 for f in self.feature_names}
 
@@ -677,6 +686,12 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
 
     def fit(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> 'AmortizationFeatureBuilder':
         df_features = self._calculate_features(df)
+        
+        # 在 fit 阶段也计算 UPB_trend_x_amort_short_mean（如果有 context）
+        # 注意：在 fit 阶段可能还没有 temporal_features，所以先设为0
+        if "UPB_trend_x_amort_short_mean" not in df_features.columns:
+            df_features["UPB_trend_x_amort_short_mean"] = 0.0
+        
         for c in df_features.columns:
             v = df_features[c].dropna()
             self.impute_vals[c] = float(v.median() if len(v) else 0.0)
@@ -685,6 +700,14 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
 
     def transform(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         df_features = self._calculate_features(df)
+        
+        # --- 新增：资产波动复合特征 ---
+        # UPB_trend × amort_short_mean: 高余额下降慢的贷款
+        # 结合UPB趋势和还款行为，识别高余额但下降缓慢且还款不足的高风险贷款
+        # 注意：由于 builder 执行顺序，需要在 pipeline 层面计算此特征
+        # 这里先设置为0，实际计算将在 pipeline 的 transform 方法中完成
+        df_features["UPB_trend_x_amort_short_mean"] = 0.0
+        
         return df_features.fillna(self.impute_vals)
 
 
@@ -847,9 +870,21 @@ class LoanFeaturePipeline:
             
             if isinstance(builder, StaticFeatureBuilder):
                 context['static_features'] = X_builder
-        
+            elif isinstance(builder, GenericTemporalBuilder):
+                context['temporal_features'] = X_builder
+                
         X_full = pd.concat(all_features_list, axis=1).astype(float)
-        X_full = X_full.fillna(self.global_impute_vals) 
+        X_full = X_full.fillna(self.global_impute_vals)
+        
+        # --- 新增：在 pipeline 层面计算跨 builder 的复合特征 ---
+        # UPB_trend × amort_short_mean: 资产波动复合特征
+        if "CurrentActualUPB_w_main_trend" in X_full.columns and "amort_short_mean" in X_full.columns:
+            upb_trend = X_full["CurrentActualUPB_w_main_trend"].values
+            amort_short_mean = X_full["amort_short_mean"].values
+            X_full["UPB_trend_x_amort_short_mean"] = upb_trend * amort_short_mean
+            # 更新插补值（使用中位数）
+            v = X_full["UPB_trend_x_amort_short_mean"].dropna()
+            self.global_impute_vals["UPB_trend_x_amort_short_mean"] = float(v.median() if len(v) else 0.0)
 
         existing_drop = [f for f in self.features_to_drop if f in X_full.columns]
         X_full = X_full.drop(columns=existing_drop)
@@ -882,9 +917,18 @@ class LoanFeaturePipeline:
             
             if isinstance(builder, StaticFeatureBuilder):
                 context['static_features'] = X_builder
+            elif isinstance(builder, GenericTemporalBuilder):
+                context['temporal_features'] = X_builder
                 
         X_full = pd.concat(all_features_list, axis=1).astype(float)
         X_full = X_full.fillna(self.global_impute_vals)
+        
+        # --- 新增：在 pipeline 层面计算跨 builder 的复合特征 ---
+        # UPB_trend × amort_short_mean: 资产波动复合特征
+        if "CurrentActualUPB_w_main_trend" in X_full.columns and "amort_short_mean" in X_full.columns:
+            upb_trend = X_full["CurrentActualUPB_w_main_trend"].values
+            amort_short_mean = X_full["amort_short_mean"].values
+            X_full["UPB_trend_x_amort_short_mean"] = upb_trend * amort_short_mean
 
         missing_cols = set(self.feature_names_) - set(X_full.columns)
         for col in missing_cols:
@@ -1018,9 +1062,10 @@ def main():
         "RateChange",
         "RateVolatility",
         "ARM_Flag",
-        "InterestRateStress"
+        "InterestRateStress",
 
-        # 
+        # 资产波动复合特征
+        "UPB_trend_x_amort_short_mean"
     ]
 
 

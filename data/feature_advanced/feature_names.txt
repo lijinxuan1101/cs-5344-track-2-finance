@@ -33,6 +33,7 @@ LTV_x_DTI
 UPB_per_CreditScore
 InterestRate_x_LTV
 Single_Borrower_Flag
+High_DTI_and_Low_CreditScore_Flag
 DTI_HighRisk_Flag
 DTI_MidRisk_Flag
 Borrowers_Risk_Flag
