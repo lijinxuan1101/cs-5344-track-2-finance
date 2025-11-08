@@ -487,7 +487,11 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
             # 新增：摊销行为延伸特征
             "Cumulative_Shortfall", "Zero_Payment_Streak", "Shortfall_Volatility",
             # 新增：早期违约特征
-            "Early_Delinquency_Flag"
+            "Early_Delinquency_Flag",
+            # 新增：摊销滞后特征
+            "Amortization_Lag",
+            # 新增：早期支付趋势特征
+            "Early_Payment_Trend"
         ]
         self.impute_vals = {f: 0.0 for f in self.feature_names}
 
@@ -594,6 +598,61 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
                     delinquent_months = np.sum(s_row[recent_indices] > delinquency_threshold)
                     early_delinquency_count[i] = delinquent_months
         # --- 结束新增 ---
+        
+        # --- 新增：摊销滞后特征 ---
+        # Amortization_Lag: 从贷款发放到首次还本的期数
+        # 用于识别长期仅付息（IO贷款）→ 高风险
+        # 计算公式：np.argmax(Observed > 0)，即首次还本的月份索引
+        amortization_lag = np.zeros(n)
+        for i in range(n):
+            if use_mask[i]:
+                obs_prin_row = ObsPrin[i, :]
+                e_row = E[i, :]
+                # 只考虑预期还款 > 0 的月份（有还款义务的月份）
+                valid_mask = (e_row > 1e-6) & (~np.isnan(obs_prin_row))
+                valid_indices = np.where(valid_mask)[0]
+                if len(valid_indices) > 0:
+                    valid_obs_prin = obs_prin_row[valid_indices]
+                    # 找到首次还本的月份（ObsPrin > 0）
+                    first_payment_mask = valid_obs_prin > 1e-6
+                    if np.any(first_payment_mask):
+                        # 使用 np.argmax 找到第一个 True 的索引
+                        first_payment_idx = np.argmax(first_payment_mask)
+                        amortization_lag[i] = float(first_payment_idx)
+                    else:
+                        # 如果从未还本（长期仅付息），设置为一个很大的值
+                        # 表示从贷款开始就一直是IO状态，这是高风险信号
+                        amortization_lag[i] = float(len(valid_indices))
+        # --- 结束新增 ---
+        
+        # --- 新增：早期支付趋势特征 ---
+        # Early_Payment_Trend: 早期支付趋势（前6个月的支付趋势）
+        # 计算前6个月实际支付的线性趋势（斜率）
+        # 正斜率表示支付增加（好的信号），负斜率表示支付减少（坏的信号）
+        early_payment_trend = np.zeros(n)
+        for i in range(n):
+            if use_mask[i]:
+                obs_prin_row = ObsPrin[i, :]
+                e_row = E[i, :]
+                # 找到有效的数据点（预期还款 > 0 的月份）
+                valid_mask = (e_row > 1e-6) & (~np.isnan(obs_prin_row))
+                valid_indices = np.where(valid_mask)[0]
+                if len(valid_indices) >= 2:
+                    # 取前6个月（或所有有效月份，如果少于6个月）
+                    num_months = min(6, len(valid_indices))
+                    early_indices = valid_indices[:num_months]  # 从开始取前6个月
+                    early_payments = obs_prin_row[early_indices]
+                    
+                    if len(early_payments) >= 2:
+                        # 计算线性趋势（斜率）
+                        x_axis = np.arange(len(early_payments))
+                        valid_payments_mask = ~np.isnan(early_payments) & (early_payments >= 0)
+                        valid_count = np.sum(valid_payments_mask)
+                        if valid_count >= 2:
+                            # 使用线性回归计算斜率
+                            slope, _ = np.polyfit(x_axis[valid_payments_mask], early_payments[valid_payments_mask], 1)
+                            early_payment_trend[i] = slope
+        # --- 结束新增 ---
 
         feats = pd.DataFrame({
             "amort_short_mean": np.where(use_mask, short_mean, 0.0),
@@ -607,7 +666,11 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
             "Zero_Payment_Streak": np.where(use_mask, zero_payment_streak, 0.0),
             "Shortfall_Volatility": np.where(use_mask, shortfall_volatility, 0.0),
             # 早期违约特征
-            "Early_Delinquency_Flag": np.where(use_mask, early_delinquency_count, 0.0)
+            "Early_Delinquency_Flag": np.where(use_mask, early_delinquency_count, 0.0),
+            # 摊销滞后特征
+            "Amortization_Lag": np.where(use_mask, amortization_lag, 0.0),
+            # 早期支付趋势特征
+            "Early_Payment_Trend": np.where(use_mask, early_payment_trend, 0.0)
         }, index=df.index)
         
         return feats

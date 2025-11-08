@@ -47,6 +47,8 @@ amort_short_std
 io_payment_count
 Zero_Payment_Streak
 Early_Delinquency_Flag
+Amortization_Lag
+Early_Payment_Trend
 CurrentNonInterestBearingUPB_slope_full
 MaturityPressure_Index
 CurrentActualUPB_w_main_trend
