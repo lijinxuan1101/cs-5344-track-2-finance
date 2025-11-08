@@ -50,6 +50,7 @@ Zero_Payment_Streak
 Early_Delinquency_Flag
 Amortization_Lag
 Early_Payment_Trend
+UPB_trend_x_amort_short_mean
 CurrentNonInterestBearingUPB_slope_full
 MaturityPressure_Index
 CurrentActualUPB_w_main_trend
