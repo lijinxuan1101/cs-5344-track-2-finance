@@ -121,6 +121,14 @@ class StaticFeatureBuilder(FeatureBuilderBase):
         data['UPB_per_CreditScore'] = safe_div(data['OriginalUPB'], data['CreditScore'] + 1.0)
         data['InterestRate_x_LTV'] = data['OriginalInterestRate'] * data['OriginalLTV']
         
+        # --- 新增：借款人结构风险特征 ---
+        # Single_Borrower_Flag: 单人贷款标志（NumberOfBorrowers == 1）
+        # 单人贷款的违约率通常更高，因为缺乏共同还款人的支持
+        if 'NumberOfBorrowers' in data.columns:
+            data['Single_Borrower_Flag'] = (data['NumberOfBorrowers'] == 1).astype(int)
+        else:
+            data['Single_Borrower_Flag'] = 0
+        
         if self._fitted:
             for c in data.columns:
                  if c not in self.static_cols:
@@ -825,13 +833,7 @@ def main():
         "Shortfall_Volatility",
         # "Zero_Payment_Streak", -->有用
 
-        
-        
-        
     ]
-    # ==================================================================
-    # === 更新结束 ===
-    # ==================================================================
 
 
     # 按顺序定义构建器
