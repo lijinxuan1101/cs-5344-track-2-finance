@@ -7,7 +7,6 @@ import re
 from abc import ABC, abstractmethod
 
 # ---------- utilities ----------
-# (保持不变)
 def safe_div(a, b, eps=1e-9):
     return a / (b + eps)
 
@@ -96,7 +95,6 @@ class StaticFeatureBuilder(FeatureBuilderBase):
                 self.impute_vals[c] = float(v.median() if len(v) else 0.0)
         
         # 3. 拟合交叉特征的插补值
-        # (在fit时也运行transform来获取交叉特征的统计)
         df_transformed = self.transform(df, context)
         for c in df_transformed.columns:
             if c not in self.impute_vals:
@@ -110,23 +108,19 @@ class StaticFeatureBuilder(FeatureBuilderBase):
     def transform(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         data = df[self.static_cols].copy()
         
-        # 1. 应用类别编码
         for c, enc in self.cat_encoders.items():
             x = data[c].fillna("MISSING").astype(str)
             x = x.where(x.isin(enc.classes_), "UNKNOWN")
             data[c] = enc.transform(x)
             
-        # 2. 应用数值插补
         for c in self.static_cols:
             if c not in self.cat_encoders:
                 data[c] = data[c].fillna(self.impute_vals.get(c, 0.0))
         
-        # 3. 创建静态交叉特征
         data['LTV_x_DTI'] = data['OriginalLTV'] * data['OriginalDTI']
         data['UPB_per_CreditScore'] = safe_div(data['OriginalUPB'], data['CreditScore'] + 1.0)
         data['InterestRate_x_LTV'] = data['OriginalInterestRate'] * data['OriginalLTV']
         
-        # 4. 填充交叉特征 (主要用于transform阶段)
         if self._fitted:
             for c in data.columns:
                  if c not in self.static_cols:
@@ -136,66 +130,140 @@ class StaticFeatureBuilder(FeatureBuilderBase):
 
 class LeverageFeatureBuilder(FeatureBuilderBase):
     """
-    处理杠杆 (LTV) 相关的时序特征。
-    - LTV 波动性 (max, std)
-    - LTV 变化 (LTV_Change = last_LTV - Original_LTV)
+    杠杆风险 (Leverage Risk) 特征构建器
+    - 静态 + 动态 + 波动 + 极端风险
     """
     def __init__(self, temporal_cols_all: List[str]):
         super().__init__()
         self.ltv_cols = sorted(
             [c for c in temporal_cols_all if c.endswith("_EstimatedLTV")],
-            key=lambda x: int(x.split("_",1)[0])
+            key=lambda x: int(x.split("_", 1)[0])
         )
         self.feature_names = [
-            "EstimatedLTV_max", 
-            "EstimatedLTV_std", 
-            "EstimatedLTV_last_val", # 作为辅助列
-            "LTV_Change"
+            "EstimatedLTV_max", "EstimatedLTV_std", "EstimatedLTV_last_val",
+            "LTV_Change", "LTV_Change_Rate",
+            "LTV_Volatility_Rate",
+            "High_LTV_Flag",  # 新增：高杠杆阈值标志
+            "Negative_Equity_Flag", "Ever_Negative_Equity", "Negative_Equity_Share"
+        ]
+        self.impute_vals = {f: 0.0 for f in self.feature_names}
+
+    def _calculate_features(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        feats = pd.DataFrame(index=df.index)
+        if not self.ltv_cols or "static_features" not in context:
+            for f in self.feature_names:
+                feats[f] = 0.0
+            return feats
+
+        M = df[self.ltv_cols].to_numpy(float)
+        static_feats = context["static_features"]
+        orig_ltv = static_feats["OriginalLTV"].to_numpy(float)
+        EPS = 1e-9
+
+        with np.errstate(all="ignore"):
+            ltv_max = np.nanmax(M, axis=1)
+            ltv_std = np.nanstd(M, axis=1)
+            ltv_mean = np.nanmean(M, axis=1)
+            feats["EstimatedLTV_max"] = ltv_max
+            feats["EstimatedLTV_std"] = ltv_std
+
+            mask = np.isnan(M)
+            idx = np.where(~mask, np.arange(M.shape[1]), 0)
+            np.maximum.accumulate(idx, axis=1, out=idx)
+            M_filled = M[np.arange(M.shape[0])[:, None], idx]
+            ltv_last = M_filled[:, -1]
+            feats["EstimatedLTV_last_val"] = ltv_last
+
+            feats["LTV_Change"] = ltv_last - orig_ltv
+            feats["LTV_Change_Rate"] = (ltv_last - orig_ltv) / (np.abs(orig_ltv) + EPS)
+            
+            # --- 杠杆波动性：资产价值波动敏感度 ---
+            feats["LTV_Volatility_Rate"] = ltv_std / (np.abs(ltv_mean) + EPS)
+            
+            # --- 杠杆极端化风险特征 ---
+            # 1. High_LTV_Flag: 高杠杆阈值（OriginalLTV ≥ 95）
+            feats["High_LTV_Flag"] = (orig_ltv >= 95).astype(int)
+            
+            # 2. Negative_Equity_Flag: 房贷倒挂风险（EstimatedLTV_last ≥ 100）
+            feats["Negative_Equity_Flag"] = (ltv_last >= 100).astype(int)
+            
+            # 3. 其他负权益特征
+            feats["Ever_Negative_Equity"] = (np.nanmax(M, axis=1) >= 100).astype(int)
+            feats["Negative_Equity_Share"] = np.nanmean((M >= 100), axis=1)
+
+        return feats
+
+    def fit(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> "LeverageFeatureBuilder":
+        df_features = self._calculate_features(df, context)
+        for c in df_features.columns:
+            v = df_features[c].dropna()
+            self.impute_vals[c] = float(v.median() if len(v) else 0.0)
+        self._fitted = True
+        return self
+
+    def transform(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        df_features = self._calculate_features(df, context)
+        return df_features.fillna(self.impute_vals)
+
+class DebtServicingFeatureBuilder(FeatureBuilderBase):
+    """
+    偿债压力 (Debt Servicing) 特征构建器
+    - 基于 DTI 阈值风险
+    - 基于借款人结构风险
+    - 综合压力指数
+    """
+    def __init__(self):
+        super().__init__()
+        self.feature_names = [
+            "DTI_HighRisk_Flag",
+            "DTI_MidRisk_Flag",
+            "Borrowers_Risk_Flag",
+            "BorrowerCount_Ajusted_DTI",
+            "Affordability_Index"
         ]
         self.impute_vals = {f: 0.0 for f in self.feature_names}
 
     def _calculate_features(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         feats = pd.DataFrame(index=df.index)
         
-        if not self.ltv_cols or 'static_features' not in context:
-            # 依赖项缺失，返回空特征
-            for f in self.feature_names: feats[f] = 0.0
+        if "static_features" not in context:
+            for f in self.feature_names:
+                feats[f] = 0.0
             return feats
-            
-        M = df[self.ltv_cols].to_numpy(float)
-        
-        with np.errstate(all='ignore'): # 抑制 "All-NaN slice" 警告
-            feats["EstimatedLTV_max"] = np.nanmax(M, axis=1)
-            feats["EstimatedLTV_std"] = np.nanstd(M, axis=1)
-        
-        # 填充
-        mask = np.isnan(M)
-        idx = np.where(~mask, np.arange(M.shape[1]), 0)
-        np.maximum.accumulate(idx, axis=1, out=idx)
-        M_filled = M[np.arange(M.shape[0])[:,None], idx]
-        feats["EstimatedLTV_last_val"] = M_filled[:, -1]
 
-        # 依赖于 StaticFeatureBuilder 的输出
-        static_feats = context['static_features']
-        feats['LTV_Change'] = feats['EstimatedLTV_last_val'] - static_feats['OriginalLTV']
+        static_feats = context["static_features"]
+        
+        dti = static_feats["OriginalDTI"]
+        ltv = static_feats["OriginalLTV"]
+        n_borrowers = static_feats["NumberOfBorrowers"]
+
+        # 1. 静态阈值风险 (Threshold-based Risk)
+        feats["DTI_HighRisk_Flag"] = (dti > 43).astype(int)
+        feats["DTI_MidRisk_Flag"] = ((dti > 36) & (dti <= 43)).astype(int)
+
+        # 2. 借款结构风险 (Household Composition)
+        feats["Borrowers_Risk_Flag"] = (n_borrowers == 1).astype(int)
+        safe_n_borrowers = np.maximum(n_borrowers, 1.0)
+        feats["BorrowerCount_Ajusted_DTI"] = dti / np.sqrt(safe_n_borrowers)
+
+        # 3. 综合压力指数 (Composite Affordability Index)
+        feats["Affordability_Index"] = (dti / 43.0) * (ltv / 80.0)
         
         return feats
 
-    def fit(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> 'LeverageFeatureBuilder':
+    def fit(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> "DebtServicingFeatureBuilder":
         df_features = self._calculate_features(df, context)
-        
         for c in df_features.columns:
             v = df_features[c].dropna()
             self.impute_vals[c] = float(v.median() if len(v) else 0.0)
-            
+        
+        self.feature_names = df_features.columns.tolist() # 确保顺序
         self._fitted = True
         return self
 
     def transform(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         df_features = self._calculate_features(df, context)
-        # 应用fit时学到的插补值
-        df_features = df_features.fillna(self.impute_vals)
-        return df_features
+        return df_features.fillna(self.impute_vals)
 
 class BalanceFeatureBuilder(FeatureBuilderBase):
     """
@@ -229,7 +297,7 @@ class BalanceFeatureBuilder(FeatureBuilderBase):
                     slope, _ = np.polyfit(x_axis[valid_mask], row[valid_mask], 1)
                     slopes.append(slope)
                 else:
-                    slopes.append(np.nan) # 稍后由全局填充器处理
+                    slopes.append(np.nan) 
         
         feats["CurrentNonInterestBearingUPB_slope_full"] = np.array(slopes)
         return feats
@@ -240,7 +308,68 @@ class BalanceFeatureBuilder(FeatureBuilderBase):
         self.impute_vals["CurrentNonInterestBearingUPB_slope_full"] = float(v.median() if len(v) else 0.0)
         self._fitted = True
         return self
+
+    def transform(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        df_features = self._calculate_features(df)
+        return df_features.fillna(self.impute_vals)
+
+
+class MaturityRiskFeatureBuilder(FeatureBuilderBase):
+    """
+    处理到期风险 (Maturity Risk) 特征构建器
+    - 到期压力指数：衡量剩余本金与剩余期限的关系
+    """
+    def __init__(self, temporal_cols_all: List[str]):
+        super().__init__()
+        self.upb_cols = sorted(
+            [c for c in temporal_cols_all if c.endswith("_CurrentActualUPB")],
+            key=lambda x: int(x.split("_",1)[0])
+        )
+        self.rem_cols = sorted(
+            [c for c in temporal_cols_all if c.endswith("_RemainingMonthsToLegalMaturity")],
+            key=lambda x: int(x.split("_",1)[0])
+        )
+        self.feature_names = ["MaturityPressure_Index"]
+        self.impute_vals = {f: 0.0 for f in self.feature_names}
         
+    def _calculate_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        feats = pd.DataFrame(index=df.index)
+        
+        if not self.upb_cols or not self.rem_cols:
+            feats["MaturityPressure_Index"] = 0.0
+            return feats
+        
+        # 获取 CurrentActualUPB 的最后一个值
+        UPB_M = df[self.upb_cols].to_numpy(float)
+        mask_upb = np.isnan(UPB_M)
+        idx_upb = np.where(~mask_upb, np.arange(UPB_M.shape[1]), 0)
+        np.maximum.accumulate(idx_upb, axis=1, out=idx_upb)
+        UPB_filled = UPB_M[np.arange(UPB_M.shape[0])[:, None], idx_upb]
+        upb_last = UPB_filled[:, -1]
+        
+        # 获取 RemainingMonthsToLegalMaturity 的最后一个值
+        REM_M = df[self.rem_cols].to_numpy(float)
+        mask_rem = np.isnan(REM_M)
+        idx_rem = np.where(~mask_rem, np.arange(REM_M.shape[1]), 0)
+        np.maximum.accumulate(idx_rem, axis=1, out=idx_rem)
+        REM_filled = REM_M[np.arange(REM_M.shape[0])[:, None], idx_rem]
+        rem_last = REM_filled[:, -1]
+        
+        # 计算到期压力指数
+        with np.errstate(all='ignore'):
+            # MaturityPressure_Index = CurrentActualUPB_last / (RemainingMonthsToLegalMaturity_last + 1)
+            maturity_pressure = upb_last / (np.abs(rem_last) + 1.0)
+            feats["MaturityPressure_Index"] = maturity_pressure
+        
+        return feats
+
+    def fit(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> 'MaturityRiskFeatureBuilder':
+        df_features = self._calculate_features(df)
+        v = df_features["MaturityPressure_Index"].dropna()
+        self.impute_vals["MaturityPressure_Index"] = float(v.median() if len(v) else 0.0)
+        self._fitted = True
+        return self
+
     def transform(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         df_features = self._calculate_features(df)
         return df_features.fillna(self.impute_vals)
@@ -257,12 +386,13 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
         self.temporal_cols_all = temporal_cols_all
         self.feature_names = [
             "amort_short_mean", "amort_short_70", "amort_short_50",
-            "amort_short_std", "io_payment_count", "amort_mask_not_applicable"
+            "amort_short_std", "io_payment_count", "amort_mask_not_applicable",
+            # 新增：摊销行为延伸特征
+            "Cumulative_Shortfall", "Zero_Payment_Streak", "Shortfall_Volatility"
         ]
         self.impute_vals = {f: 0.0 for f in self.feature_names}
 
     def _calculate_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        # --- 1. 收集依赖列 ---
         tcols = [c for c in self.temporal_cols_all if c.endswith("_InterestBearingUPB")]
         if not tcols: return pd.DataFrame({f: 0.0 for f in self.feature_names}, index=df.index)
         tcols_sorted = sorted(tcols, key=lambda x: int(x.split("_",1)[0]))
@@ -287,13 +417,11 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
             T0 = df["OriginalLoanTerm"].to_numpy(float)
             RM = np.maximum(T0[:,None] - np.arange(IB.shape[1])[None,:], 1.0)
 
-        # --- 2. 计算掩码 (Mask) ---
         is_frm = df.get("ProductType", pd.Series("FRM", index=df.index)).astype(str).str.upper().eq("FRM")
         is_io  = df.get("InterestOnlyFlag", pd.Series("N", index=df.index)).astype(str).str.upper().eq("Y")
         is_bal = df.get("BalloonIndicator", pd.Series("N", index=df.index)).astype(str).str.upper().eq("Y")
         use_mask = (is_frm & (~is_io) & (~is_bal)).to_numpy()
 
-        # --- 3. 计算摊销 ---
         n = IB.shape[0]; T = IB.shape[1]
         ExpPrin = np.zeros((n, T))
         for t in range(1, T):
@@ -307,9 +435,8 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
         ObsPrin = np.maximum(IB[:, :-1] - IB[:, 1:], 0.0)
         E = ExpPrin[:, 1:]
         S = (E - ObsPrin) / (np.abs(E) + 1e-9)
-        S = np.clip(S, 0.0, 1.0) # 短缺比例 (0=没短缺, 1=全短缺)
+        S = np.clip(S, 0.0, 1.0) 
 
-        # --- 4. 生成特征 ---
         with np.errstate(all='ignore'):
             short_std = np.nanstd(S, axis=1)
             io_count = np.sum((E > 1e-6) & (ObsPrin < 1e-6), axis=1)
@@ -318,13 +445,43 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
         short_70   = (S > 0.70).mean(axis=1)
         short_50   = (S > 0.50).mean(axis=1)
 
+        # --- 新增：摊销行为延伸特征 ---
+        # 1. Cumulative_Shortfall: 累积短缺（衡量长期还款偏离程度）
+        # 计算每个时间点的累积短缺比例总和
+        cumulative_shortfall = np.nansum(S, axis=1)  # 对所有时间点求和
+        
+        # 2. Zero_Payment_Streak: 零支付连续月数（断供前兆）
+        # 从后往前找，找出最近的连续零支付月数（更关注最近的支付行为）
+        zero_payment_streak = np.zeros(n)
+        for i in range(n):
+            if use_mask[i]:
+                obs_prin_row = ObsPrin[i, :]
+                # 从后往前找连续零支付
+                current_streak = 0
+                for j in range(obs_prin_row.shape[0] - 1, -1, -1):
+                    if obs_prin_row[j] < 1e-6:  # 接近零支付
+                        current_streak += 1
+                    else:
+                        break  # 遇到非零支付就停止
+                zero_payment_streak[i] = current_streak
+        
+        # 3. Shortfall_Volatility: 短缺波动性（捕捉还款不稳定性）
+        # 使用变异系数（CV = std/mean）来标准化波动性，使其对不同水平的短缺都可比
+        shortfall_mean_abs = np.abs(short_mean) + 1e-9
+        shortfall_volatility = np.where(shortfall_mean_abs > 1e-6, short_std / shortfall_mean_abs, 0.0)
+        # --- 结束新增 ---
+
         feats = pd.DataFrame({
             "amort_short_mean": np.where(use_mask, short_mean, 0.0),
             "amort_short_70": np.where(use_mask, short_70, 0.0),
             "amort_short_50": np.where(use_mask, short_50, 0.0),
             "amort_short_std": np.where(use_mask, short_std, 0.0),
             "io_payment_count": np.where(use_mask, io_count, 0.0),
-            "amort_mask_not_applicable": (~use_mask).astype(int)
+            "amort_mask_not_applicable": (~use_mask).astype(int),
+            # 新增特征
+            "Cumulative_Shortfall": np.where(use_mask, cumulative_shortfall, 0.0),
+            "Zero_Payment_Streak": np.where(use_mask, zero_payment_streak, 0.0),
+            "Shortfall_Volatility": np.where(use_mask, shortfall_volatility, 0.0)
         }, index=df.index)
         
         return feats
@@ -340,6 +497,7 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
     def transform(self, df: pd.DataFrame, context: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         df_features = self._calculate_features(df)
         return df_features.fillna(self.impute_vals)
+
 
 
 class GenericTemporalBuilder(FeatureBuilderBase):
@@ -380,7 +538,6 @@ class GenericTemporalBuilder(FeatureBuilderBase):
             cols_sorted = sorted(cols, key=lambda x: int(x.split("_",1)[0]))
             M = df[cols_sorted].to_numpy(float)
             
-            # 填充缺失值（向前和向后）
             mask = np.isnan(M)
             idx = np.where(~mask, np.arange(M.shape[1]), 0)
             np.maximum.accumulate(idx, axis=1, out=idx)
@@ -463,11 +620,7 @@ class LoanFeaturePipeline:
 
     @staticmethod
     def _sentinel_map(df: pd.DataFrame) -> pd.DataFrame:
-        """
-        将哨兵值 (999, 9, '9') 映射为 np.nan，并创建 'missing' 标志。
-        """
         df = df.copy()
-        # Numeric sentinels
         SENT = {
             "CreditScore": 9999, "OriginalDTI": 999, "OriginalLTV": 999,
             "MI Pct": 999, "EstimatedLTV": 999,
@@ -476,16 +629,15 @@ class LoanFeaturePipeline:
             if col in df.columns:
                 miss = (df[col] == bad)
                 df.loc[miss, col] = np.nan
-                df[f"{col}_missing"] = miss.astype(int) # Missing flag
+                df[f"{col}_missing"] = miss.astype(int) 
 
-        # Flags '9'/'99' => missing
         FLAG_9 = ["FirstTimeHomebuyerFlag","OccupancyStatus","LoanPurpose","Channel","PropertyType"]
         for col in FLAG_9:
             if col in df.columns:
                 x = df[col].astype(str).str.strip()
                 miss = (x == "9") | (x == "99")
                 df.loc[miss, col] = np.nan
-                df[f"{col}_missing"] = miss.astype(int) # Missing flag
+                df[f"{col}_missing"] = miss.astype(int) 
 
         return df
 
@@ -496,7 +648,6 @@ class LoanFeaturePipeline:
         context: Dict[str, pd.DataFrame] = {}
         all_features_list: List[pd.DataFrame] = []
         
-        # 按顺序拟合和转换
         for builder in self.builders:
             print(f"Fitting {builder.__class__.__name__}...")
             builder.fit(df, context)
@@ -505,14 +656,11 @@ class LoanFeaturePipeline:
             all_features_list.append(X_builder)
             self.global_impute_vals.update(builder.get_impute_values())
             
-            # 为后续构建器提供上下文
-            # (例如，杠杆构建器需要静态特征)
             if isinstance(builder, StaticFeatureBuilder):
                 context['static_features'] = X_builder
         
-        # 合并, 填充, 和删除
         X_full = pd.concat(all_features_list, axis=1).astype(float)
-        X_full = X_full.fillna(self.global_impute_vals) # 全局填充
+        X_full = X_full.fillna(self.global_impute_vals) 
 
         existing_drop = [f for f in self.features_to_drop if f in X_full.columns]
         X_full = X_full.drop(columns=existing_drop)
@@ -520,7 +668,6 @@ class LoanFeaturePipeline:
 
         self.feature_names_ = X_full.columns.tolist()
         
-        # 拟合缩放器
         if self.scaler_type == "robust":
             self.scaler = RobustScaler().fit(X_full.values)
             print("Using RobustScaler.")
@@ -547,26 +694,20 @@ class LoanFeaturePipeline:
             if isinstance(builder, StaticFeatureBuilder):
                 context['static_features'] = X_builder
                 
-        # 合并, 填充, 删除, 重排序
         X_full = pd.concat(all_features_list, axis=1).astype(float)
         X_full = X_full.fillna(self.global_impute_vals)
 
-        # 确保列一致
         missing_cols = set(self.feature_names_) - set(X_full.columns)
         for col in missing_cols:
-            X_full[col] = 0.0 # 在transform中可能出现的缺失列
+            X_full[col] = 0.0 
             
         extra_cols = set(X_full.columns) - set(self.feature_names_)
         if extra_cols:
-            # 在transform中不应删除的列 (例如 'missing' 标志)
-            # 我们只保留在fit时确定的列
             cols_to_drop = [f for f in extra_cols if f not in self.features_to_drop]
             X_full = X_full.drop(columns=list(cols_to_drop))
 
-        # 确保顺序和列完全一致
         X_full = X_full[self.feature_names_]
         
-        # 应用缩放
         X_scaled = self.scaler.transform(X_full.values)
         return X_scaled
 
@@ -599,10 +740,8 @@ def main():
 
     # --- 3. 初始化管道和组件 ---
     
-    # 首先，我们需要知道所有列的类型
     static_cols = []
     temporal_cols_all = []
-    # (我们假设 train_df 包含所有列)
     for c in train_df.columns:
         if c in ("index","Id","target"): continue
         if _is_temporal(c):
@@ -610,7 +749,6 @@ def main():
         else:
             static_cols.append(c)
 
-    # 定义哪些时序特征由"专业"构建器处理
     specialized_temporal_suffixes = {
         "_EstimatedLTV",
         "_CurrentNonInterestBearingUPB",
@@ -619,7 +757,9 @@ def main():
         "_RemainingMonthsToLegalMaturity",
     }
     
-    # 定义要删除的特征
+    # ==================================================================
+    # === 使用你指定的 'features_to_drop' 列表 ===
+    # ==================================================================
     features_to_drop = [
         # ---- 全部 Missing Flag ----
         "CreditScore_missing", "OriginalDTI_missing", "OriginalLTV_missing",
@@ -664,14 +804,47 @@ def main():
         # ---- 其他无效或平坦列 ----
         "amort_mask_not_applicable",
         "EstimatedLTV_last_val", # 只是 'LTV_Change' 的辅助列
+        
+        # ---- 新增：事件特征 ----
+        # 杠杆特征
+        "Negative_Equity_Flag",
+        "LTV_Change_Rate",
+        "EstimatedLTV_std",
+        "LTV_Volatility_Rate",
+        "EstimatedLTV_max",
+        "Ever_Negative_Equity",
+        "Negative_Equity_Share",
+        "EstimatedLTV_last_val" # (这个是重复的, 但不影响)
+        
+        # 偿债风险
+        # "DTI_MidRisk_Flag",
+        "Borrowers_Risk_Flag",
+        
+        # 摊销
+        "Cumulative_Shortfall",
+        "Shortfall_Volatility",
+        # "Zero_Payment_Streak", -->有用
+
+        
+        
+        
     ]
+    # ==================================================================
+    # === 更新结束 ===
+    # ==================================================================
+
 
     # 按顺序定义构建器
     builders: List[FeatureBuilderBase] = [
         StaticFeatureBuilder(static_cols=static_cols),
+        
+        # --- 新增 ---
+        DebtServicingFeatureBuilder(),
+        
         LeverageFeatureBuilder(temporal_cols_all=temporal_cols_all),
         AmortizationFeatureBuilder(temporal_cols_all=temporal_cols_all),
         BalanceFeatureBuilder(temporal_cols_all=temporal_cols_all),
+        MaturityRiskFeatureBuilder(temporal_cols_all=temporal_cols_all),  # 新增：到期风险特征
         GenericTemporalBuilder(
             temporal_cols_all=temporal_cols_all,
             ignore_col_suffixes=specialized_temporal_suffixes
@@ -686,7 +859,6 @@ def main():
     )
     
     # --- 4. 拟合 (Fit) 管道 ---
-    # 关键：只在 train_df (正常数据) 上 fit
     pipeline.fit(train_df)
 
     # --- 5. 转换 (Transform) 所有数据集 ---

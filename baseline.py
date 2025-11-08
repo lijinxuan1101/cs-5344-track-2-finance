@@ -71,34 +71,34 @@ def main():
             "model": LocalOutlierFactor(n_neighbors=15, metric='manhattan', novelty=True, n_jobs=1),
             "data": "scaled",
             "score_type": "decision_function"
-        },
-        "Isolation Forest": {
-            "model": IsolationForest(n_estimators=200, random_state=42),
-            "data": "scaled",
-            "score_type": "decision_function"
-        },
-        "One-Class SVM (nu=0.05)": {
-            "model": OneClassSVM(kernel="rbf", gamma="scale", nu=0.05),
-            "data": "scaled",
-            "score_type": "decision_function"
-        },
-        "PCA Reconstruction": {
-            "model": PCA(n_components=30, random_state=42), #
-            "data": "scaled",
-            "score_type": "reconstruction"
-        },
-        "Elliptic Envelope (Mahalanobis)": { # 新增
-            #  contamination 设为已知的验证集异常率
-            "model": EllipticEnvelope(contamination=0.1261, random_state=42),
-            "data": "scaled",
-            "score_type": "decision_function"
-        },
-        "KNN Distance (k=50)": { # 新增
-            "model": NearestNeighbors(n_neighbors=50, n_jobs=1), # 匹配 LOF k
-            "data": "scaled",
-            "score_type": "kneighbors",
-            "k": 50 # 用于在评估循环中获取距离
         }
+        # "Isolation Forest": {
+        #     "model": IsolationForest(n_estimators=200, random_state=42),
+        #     "data": "scaled",
+        #     "score_type": "decision_function"
+        # },
+        # "One-Class SVM (nu=0.05)": {
+        #     "model": OneClassSVM(kernel="rbf", gamma="scale", nu=0.05),
+        #     "data": "scaled",
+        #     "score_type": "decision_function"
+        # },
+        # "PCA Reconstruction": {
+        #     "model": PCA(n_components=30, random_state=42), #
+        #     "data": "scaled",
+        #     "score_type": "reconstruction"
+        # },
+        # "Elliptic Envelope (Mahalanobis)": { # 新增
+        #     #  contamination 设为已知的验证集异常率
+        #     "model": EllipticEnvelope(contamination=0.1261, random_state=42),
+        #     "data": "scaled",
+        #     "score_type": "decision_function"
+        # },
+        # "KNN Distance (k=50)": { # 新增
+        #     "model": NearestNeighbors(n_neighbors=50, n_jobs=1), # 匹配 LOF k
+        #     "data": "scaled",
+        #     "score_type": "kneighbors",
+        #     "k": 50 # 用于在评估循环中获取距离
+        # }
     }
     results = []
 
