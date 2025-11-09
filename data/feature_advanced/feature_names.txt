@@ -46,6 +46,7 @@ amort_short_70
 amort_short_50
 amort_short_std
 io_payment_count
+Cumulative_Shortfall
 Zero_Payment_Streak
 Early_Delinquency_Flag
 Amortization_Lag

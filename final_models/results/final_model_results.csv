@@ -1,0 +1,4 @@
+Detector,Feature,AUPRC,AUROC
+Early_Delinquency_Flag Detector (王牌),Early_Delinquency_Flag,0.49992385568803893,0.8021200373541033
+amort_short_mean Detector (二号王牌),amort_short_mean,0.4748610506197847,0.7524661167627325
+Zero_Payment_Streak Detector (三号王牌),Zero_Payment_Streak,0.26927911844282126,0.6028935895914622
