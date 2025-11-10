@@ -74,7 +74,7 @@ def objective(trial, X_train_fit, X_valid_eval, y_valid):
     metric = trial.suggest_categorical('metric', ['minkowski', 'cosine', 'manhattan', 'chebyshev'])
     
     params = {'n_neighbors': k, 'metric': metric}
-    print(f"  [Trial {trial.number}] 正在尝试: {params}...")
+    print(f"  [Trial {trial.number}] Trying parameters: {params}...")
 
     # 2. 训练模型
     # 必须设置 novelty=True 才能调用 .decision_function
@@ -95,14 +95,14 @@ def objective(trial, X_train_fit, X_valid_eval, y_valid):
         
         # 处理可能的NaN/Inf
         if np.isnan(auprc) or np.isinf(auprc):
-            print(f"  -> Trial {trial.number} 结果: NaN (返回 0.0)")
+            print(f"  -> Trial {trial.number} Result: NaN (return 0.0)")
             return 0.0 # 返回一个低分，让 Optuna 知道这是不好的参数
 
-        print(f"  -> Trial {trial.number} 结果: AUPRC = {auprc:.6f}")
+        print(f"  -> Trial {trial.number} Result: AUPRC = {auprc:.6f}")
         return auprc # 4. 返回要最大化的值 (AUPRC)
 
     except Exception as e:
-        print(f"  -> Trial {trial.number} 失败: {e}")
+        print(f"  -> Trial {trial.number} Failed: {e}")
         return 0.0 # 失败的尝试返回0分
 
 def main():

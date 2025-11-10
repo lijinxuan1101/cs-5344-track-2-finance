@@ -220,6 +220,7 @@ class LeverageFeatureBuilder(FeatureBuilderBase):
         df_features = self._calculate_features(df, context)
         return df_features.fillna(self.impute_vals)
 
+
 class DebtServicingFeatureBuilder(FeatureBuilderBase):
     """
     偿债压力 (Debt Servicing) 特征构建器
@@ -622,7 +623,6 @@ class AmortizationFeatureBuilder(FeatureBuilderBase):
         return df_features.fillna(self.impute_vals)
 
 
-
 class GenericTemporalBuilder(FeatureBuilderBase):
     """
     处理所有*剩余*的时序特征。
@@ -1015,6 +1015,7 @@ def main():
     # --- 6. 保存输出 ---
     print(f"正在保存特征到 {OUTPUT_PATH}...")
     
+    # 保存 .npy 文件
     np.save(os.path.join(OUTPUT_PATH, "train_scaled.npy"), X_train_scaled)
     np.save(os.path.join(OUTPUT_PATH, "valid_scaled.npy"), X_valid_scaled)
     np.save(os.path.join(OUTPUT_PATH, "test_scaled.npy"), X_test_scaled)
@@ -1030,6 +1031,46 @@ def main():
             f.write(col + "\n")
     print(f"已保存特征列名到 {OUTPUT_PATH}/feature_names.txt")
     
+    # --- 7. 保存 CSV 文件 ---
+    CSV_OUTPUT_PATH = os.path.join(OUTPUT_PATH, "csv")
+    os.makedirs(CSV_OUTPUT_PATH, exist_ok=True)
+    print(f"正在保存 CSV 文件到 {CSV_OUTPUT_PATH}...")
+    
+    # 将特征矩阵转换为 DataFrame 并保存为 CSV
+    feature_names = pipeline.feature_names_
+    
+    print("  正在保存 train_scaled.csv...")
+    train_df_csv = pd.DataFrame(X_train_scaled, columns=feature_names)
+    train_df_csv.to_csv(os.path.join(CSV_OUTPUT_PATH, "train_scaled.csv"), index=False)
+    
+    print("  正在保存 valid_scaled.csv...")
+    valid_df_csv = pd.DataFrame(X_valid_scaled, columns=feature_names)
+    valid_df_csv.to_csv(os.path.join(CSV_OUTPUT_PATH, "valid_scaled.csv"), index=False)
+    
+    print("  正在保存 test_scaled.csv...")
+    test_df_csv = pd.DataFrame(X_test_scaled, columns=feature_names)
+    test_df_csv.to_csv(os.path.join(CSV_OUTPUT_PATH, "test_scaled.csv"), index=False)
+    
+    # 保存标签为 CSV
+    print("  正在保存 train_labels.csv...")
+    train_labels_df = pd.DataFrame({'target': train_df['target'].values})
+    train_labels_df.to_csv(os.path.join(CSV_OUTPUT_PATH, "train_labels.csv"), index=False)
+    
+    print("  正在保存 valid_labels.csv...")
+    valid_labels_df = pd.DataFrame({'target': valid_df['target'].values})
+    valid_labels_df.to_csv(os.path.join(CSV_OUTPUT_PATH, "valid_labels.csv"), index=False)
+    
+    # 保存测试集 ID 为 CSV
+    print("  正在保存 test_ids.csv...")
+    test_ids_df = pd.DataFrame({'Id': test_ids.values})
+    test_ids_df.to_csv(os.path.join(CSV_OUTPUT_PATH, "test_ids.csv"), index=False)
+    
+    # 保存特征名称列表为 CSV（可选，便于查看）
+    print("  正在保存 feature_names.csv...")
+    feature_names_df = pd.DataFrame({'feature_name': feature_names, 'feature_index': range(len(feature_names))})
+    feature_names_df.to_csv(os.path.join(CSV_OUTPUT_PATH, "feature_names.csv"), index=False)
+    
+    print(f"已保存所有 CSV 文件到 {CSV_OUTPUT_PATH}")
     print("--- 特征工程执行完毕 ---")
 
 
