@@ -1,0 +1,2 @@
+AUPRC,AUROC,Weight_Early_Delinquency_Flag,Weight_amort_short_mean,Weight_Zero_Payment_Streak,Weight_PCA_LOF_k50
+0.5789574172371907,0.8192940175206734,0.4,0.3,0.1,0.2

@@ -1,0 +1,16 @@
+Params,n_neighbors,metric,AUPRC,AUROC
+"{'n_neighbors': 10, 'metric': 'manhattan'}",10,manhattan,0.3524209016115683,0.7107200422011979
+"{'n_neighbors': 20, 'metric': 'manhattan'}",20,manhattan,0.3507616403036622,0.7160499578082445
+"{'n_neighbors': 35, 'metric': 'manhattan'}",35,manhattan,0.3487183745176329,0.7179972938104175
+"{'n_neighbors': 50, 'metric': 'manhattan'}",50,manhattan,0.3428680475967813,0.7165642534325456
+"{'n_neighbors': 10, 'metric': 'minkowski'}",10,minkowski,0.3313202831385028,0.7025429306226533
+"{'n_neighbors': 75, 'metric': 'manhattan'}",75,manhattan,0.3288779456715161,0.708589209045434
+"{'n_neighbors': 20, 'metric': 'minkowski'}",20,minkowski,0.3266280471584818,0.705492261802282
+"{'n_neighbors': 35, 'metric': 'minkowski'}",35,minkowski,0.3224119452829266,0.7040971483661043
+"{'n_neighbors': 50, 'metric': 'minkowski'}",50,minkowski,0.31730050057525633,0.6987049129710454
+"{'n_neighbors': 75, 'metric': 'minkowski'}",75,minkowski,0.2927726795552122,0.6864414488280575
+"{'n_neighbors': 10, 'metric': 'cosine'}",10,cosine,0.17059138520970077,0.5876368871454736
+"{'n_neighbors': 20, 'metric': 'cosine'}",20,cosine,0.16260904451750152,0.5734114512925218
+"{'n_neighbors': 35, 'metric': 'cosine'}",35,cosine,0.1575847086784134,0.563320366830639
+"{'n_neighbors': 50, 'metric': 'cosine'}",50,cosine,0.15313893869042264,0.5538820664108617
+"{'n_neighbors': 75, 'metric': 'cosine'}",75,cosine,0.14797675694138696,0.5434043159915408
